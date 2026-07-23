@@ -166,6 +166,30 @@ class TestInPlaceAtomicWrite:
         assert "hello" in result
         assert "\x1b" not in result
 
+    def test_in_place_cleans_tempfile_on_rename_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """If os.replace fails after the tempfile is written, the
+        tempfile must be removed — no leaks of .scrublog-* files."""
+        f = tmp_path / "log.log"
+        f.write_bytes(b"\x1b[31mhi\x1b[0m")
+
+        # Force os.replace to fail by simulating a permission error.
+        import scrublog.cli as scrublog_cli
+
+        def boom(*args, **kwargs):
+            raise OSError("simulated rename failure")
+
+        monkeypatch.setattr(scrublog_cli.os, "replace", boom)
+        rc = main([str(f), "--in-place"])
+        # CLI catches the OSError and exits non-zero.
+        assert rc == 1
+        # Source file unchanged.
+        assert f.read_bytes() == b"\x1b[31mhi\x1b[0m"
+        # No leftover .scrublog-* temp files in the same directory.
+        leftovers = list(tmp_path.glob(".scrublog-*"))
+        assert leftovers == [], f"leftover tempfiles leaked: {leftovers}"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

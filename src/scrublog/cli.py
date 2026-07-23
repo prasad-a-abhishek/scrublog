@@ -203,22 +203,30 @@ def main(argv=None) -> int:
                     fd, tmp_path = tempfile.mkstemp(
                         prefix=".scrublog-", dir=str(p.parent)
                     )
-                    tmp_buf = os.fdopen(fd, "wb")
+                    # Track both so cleanup is correct even if mkstemp
+                    # succeeds but fdopen or the cleanup itself raises.
+                    tmp_fp = None
                     try:
+                        tmp_fp = os.fdopen(fd, "wb")
                         for cleaned in stream_iter(
                             _read_chunks(fp, _STDIN_CHUNK_BYTES)
                         ):
-                            saw_any_input = True
-                            tmp_buf.write(cleaned.encode("utf-8"))
-                        tmp_buf.flush()
-                        tmp_buf.close()
+                            tmp_fp.write(cleaned.encode("utf-8"))
                     except BaseException:
-                        tmp_buf.close()
+                        # Best-effort cleanup on ANY failure (including
+                        # KeyboardInterrupt, MemoryError, etc.).
+                        if tmp_fp is not None:
+                            try:
+                                tmp_fp.close()
+                            except Exception:
+                                pass
                         try:
                             os.unlink(tmp_path)
                         except OSError:
                             pass
                         raise
+                    tmp_fp.flush()
+                    tmp_fp.close()
                 except OSError as e:
                     print(f"error: {e}", file=sys.stderr)
                     return 1
@@ -229,14 +237,17 @@ def main(argv=None) -> int:
                 # os.replace on the user's path is what they expect.
                 try:
                     if args.follow_symlinks:
-                        # Write to the target the symlink resolves to.
                         target = p.resolve()
                     else:
                         target = p
-                    # On POSIX, os.replace is atomic and replaces the target.
                     os.replace(tmp_path, target)
                 except OSError as e:
                     print(f"error: {e}", file=sys.stderr)
+                    # Clean up the orphan tempfile if the rename failed.
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
                     return 1
                 return 0
 
