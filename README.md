@@ -44,8 +44,10 @@ Existing solutions either:
 
 ## Install
 
+scrublog is not yet published to PyPI. Install directly from GitHub:
+
 ```bash
-pip install scrublog
+pip install git+https://github.com/prasad-a-abhishek/scrublog.git
 ```
 
 Or from source:
