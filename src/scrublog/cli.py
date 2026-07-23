@@ -24,7 +24,25 @@ import os
 import sys
 from pathlib import Path
 
-from . import __version__, clean
+from . import __version__, clean, stream, stream_iter
+
+# 64 KiB read chunk: large enough to amortize syscall overhead, small enough
+# that a 100MB scrub doesn't sit idle on the user's monitor.
+_STDIN_CHUNK_BYTES = 64 * 1024
+
+
+def _read_chunks(fp, chunk_size: int):
+    """Yield bytes from *fp* in fixed-size chunks until EOF.
+
+    This is intentionally its own helper (rather than reading the whole
+    stream into memory) so the CLI can process infinitely-tailed inputs
+    like ``docker logs -f | scrublog`` without OOM-ing.
+    """
+    while True:
+        chunk = fp.read(chunk_size)
+        if not chunk:
+            return
+        yield chunk
 
 
 def _is_special_file(p: Path) -> bool:
@@ -115,13 +133,24 @@ def main(argv=None) -> int:
         )
         raise SystemExit(2)
 
-    # ---- Stdin branch ----
+    # ---- Stdin branch: stream chunks, don't buffer ----
 
     if using_stdin:
-        data = sys.stdin.buffer.read()
-        sys.stdout.write(clean(data))
-        if not data.endswith(b"\n"):
-            sys.stdout.write("\n")
+        # Read in fixed-size chunks so we don't OOM on large or infinite
+        # stdin (e.g. `docker logs -f | scrublog`). 64 KiB matches one
+        # common pipe buffer and keeps the per-call overhead small.
+        stdin_buf = sys.stdin.buffer
+        stdout_buf = sys.stdout
+        saw_any_input = False
+        ends_with_newline = True  # default so we don't append one unnecessarily
+        # Use the package's stream() to handle escape sequences split
+        # across chunk boundaries correctly.
+        for cleaned in stream_iter(_read_chunks(stdin_buf, _STDIN_CHUNK_BYTES)):
+            saw_any_input = True
+            stdout_buf.write(cleaned)
+            ends_with_newline = cleaned.endswith("\n")
+        if saw_any_input and not ends_with_newline:
+            stdout_buf.write("\n")
         return 0
 
     # ---- File branch ----
@@ -143,47 +172,84 @@ def main(argv=None) -> int:
         )
         return 1
 
+    # Symlink protection only applies for write modes (--in-place).
+    # For read-only mode (stdout), following a symlink is fine — it's
+    # the user's choice and there's no overwrite to defend against.
+    if args.in_place and _has_symlink_component(p) and not args.follow_symlinks:
+        print(
+            f"error: refusing --in-place on path with symlink component {p!s} "
+            "(pass --follow-symlinks to override)",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Stream the file in chunks instead of reading it whole. The
+    # special-file check above already guards against /dev/zero and
+    # similar infinite sources, so we can safely open and iterate.
     try:
-        raw = p.read_bytes()
+        with open(p, "rb") as fp:
+            saw_any_input = False
+            ends_with_newline = True
+            if args.in_place:
+                # Use a tempfile + atomic rename so we don't truncate the
+                # source until the cleaned content is fully written. This
+                # protects against partial writes on disk-full / signal.
+                # For --in-place we preserve byte-for-byte equivalence of
+                # the file other than the ANSI removal — i.e. we do NOT
+                # append a trailing newline if the original lacked one.
+                try:
+                    import tempfile
+
+                    fd, tmp_path = tempfile.mkstemp(
+                        prefix=".scrublog-", dir=str(p.parent)
+                    )
+                    tmp_buf = os.fdopen(fd, "wb")
+                    try:
+                        for cleaned in stream_iter(
+                            _read_chunks(fp, _STDIN_CHUNK_BYTES)
+                        ):
+                            saw_any_input = True
+                            tmp_buf.write(cleaned.encode("utf-8"))
+                        tmp_buf.flush()
+                        tmp_buf.close()
+                    except BaseException:
+                        tmp_buf.close()
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
+                        raise
+                except OSError as e:
+                    print(f"error: {e}", file=sys.stderr)
+                    return 1
+
+                # Atomic rename. When --follow-symlinks is set, write
+                # through to the resolved target; otherwise the early
+                # symlink-component check above already blocked us, and
+                # os.replace on the user's path is what they expect.
+                try:
+                    if args.follow_symlinks:
+                        # Write to the target the symlink resolves to.
+                        target = p.resolve()
+                    else:
+                        target = p
+                    # On POSIX, os.replace is atomic and replaces the target.
+                    os.replace(tmp_path, target)
+                except OSError as e:
+                    print(f"error: {e}", file=sys.stderr)
+                    return 1
+                return 0
+
+            # Plain stdout mode: stream chunks straight to stdout.
+            for cleaned in stream_iter(_read_chunks(fp, _STDIN_CHUNK_BYTES)):
+                saw_any_input = True
+                sys.stdout.write(cleaned)
+                ends_with_newline = cleaned.endswith("\n")
+            if saw_any_input and not ends_with_newline:
+                sys.stdout.write("\n")
     except OSError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-
-    cleaned = clean(raw)
-
-    if args.in_place:
-        # Symlink protection: refuse to overwrite through a symlink unless the
-        # user explicitly opts in. Without this, `sudo scrublog -i link.log`
-        # can be tricked into clobbering whatever the link points at.
-        # We check both the final component AND any directory components in
-        # the path so a path like /link-dir/file.log is also caught.
-        if _has_symlink_component(p) and not args.follow_symlinks:
-            print(
-                f"error: refusing --in-place on path with symlink component {p!s} "
-                "(pass --follow-symlinks to override)",
-                file=sys.stderr,
-            )
-            return 1
-        try:
-            # O_NOFOLLOW is an extra defense-in-depth: even if a symlink was
-            # created between the is_symlink() check above and the open() call,
-            # the kernel will refuse. Skipped when the user opts in to following.
-            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-            if hasattr(os, "O_NOFOLLOW") and not args.follow_symlinks:
-                flags |= os.O_NOFOLLOW
-            fd = os.open(p, flags, 0o644)
-            try:
-                os.write(fd, cleaned.encode("utf-8"))
-            finally:
-                os.close(fd)
-        except OSError as e:
-            print(f"error: {e}", file=sys.stderr)
-            return 1
-        return 0
-
-    sys.stdout.write(cleaned)
-    if not cleaned.endswith("\n"):
-        sys.stdout.write("\n")
     return 0
 
 

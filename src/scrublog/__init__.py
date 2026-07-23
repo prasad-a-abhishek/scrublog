@@ -215,12 +215,26 @@ _MAX_BUFFER_BYTES = 1024 * 1024  # 1 MiB
 
 
 def stream(*chunks: Union[bytes, str]) -> Iterator[str]:
-    """Generator: yield cleaned chunks of text.
+    """Backward-compatible alias for :func:`stream_iter`.
 
-    Accepts ``str`` or ``bytes``. Safely handles escape sequences that
-    are split across consecutive chunks by buffering the partial tail
-    until either a terminator arrives or the next chunk shows it's
-    not actually an escape sequence after all.
+    varargs-marshal the chunks into an iterable and let the streaming
+    core do the work. Prefer :func:`stream_iter` directly when the
+    caller has an iterator (large file, stdin, pipe).
+    """
+    yield from stream_iter(chunks)
+
+
+def stream_iter(chunks) -> Iterator[str]:
+    """Generator: yield cleaned chunks from an iterable of bytes/str.
+
+    Accepts any iterable (including generators) of ``str`` or ``bytes``.
+    This is the lazy form used by streaming callers — pass a chunk
+    generator and the function never holds the whole input in memory.
+
+    Safely handles escape sequences that are split across consecutive
+    chunks by buffering the partial tail until either a terminator
+    arrives or the next chunk shows it's not actually an escape
+    sequence after all.
 
     Bare OSC/DCS introducers (``\\x1b]``, ``\\x1bP``, ``\\x1bX``, ``\\x1b^``,
     ``\\x1b_``) are buffered across chunks because the next chunk may
@@ -235,8 +249,12 @@ def stream(*chunks: Union[bytes, str]) -> Iterator[str]:
                 c = raw.decode("utf-8")
             except UnicodeDecodeError:
                 c = raw.decode("latin-1")
-        else:
+        elif isinstance(raw, str):
             c = raw
+        else:
+            raise ScrubError(
+                f"expected str or bytes, got {type(raw).__name__}"
+            )
         buffer += c
 
         # If we have a held lone ESC in the buffer (the LAST \x1b), and
