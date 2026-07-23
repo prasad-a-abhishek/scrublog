@@ -106,9 +106,12 @@ class TestCli:
         f = tmp_path / "x.log"
         f.write_text("data")
         from scrublog.cli import main
+        # --stdin together with a file path is a usage error → exit code 2.
+        # (See the test_cli_security.py:TestStdinInPlaceRejection tests for
+        # the same exit code on the --stdin + --in-place case.)
         with pytest.raises(SystemExit) as exc:
             main([str(f), "--stdin"])
-        assert exc.value.code == 1
+        assert exc.value.code == 2
 
     def test_cli_strips_file_and_writes_to_stdout(self, tmp_path, capsys):
         f = tmp_path / "log.txt"
