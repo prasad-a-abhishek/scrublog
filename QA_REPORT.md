@@ -1,6 +1,7 @@
 ---
 tests_run: 134
 tests_passed: 134
+tests_passing: true
 commit_sha_verified: 5db55ed0d1b6c6a9d335797fbc56562b9224b5d6
 fuzz_inputs_tried:
   - random_bytes_4096
