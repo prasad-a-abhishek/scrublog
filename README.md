@@ -230,6 +230,8 @@ pip install -e ".[test]"
 pytest                   # full test suite
 ```
 
+The test suite contains 134 tests and currently runs clean.
+
 Tested on Python 3.8 – 3.12.
 
 ## License
