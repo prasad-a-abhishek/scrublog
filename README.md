@@ -111,14 +111,14 @@ scrublog FILE --allow-special-files
 Pipe through it:
 
 ```bash
-$ ls --color=always /tmp | scrublog
+$ ls --color=always /tmp | scrublog -
 file1
 file2
 ...
 
-$ docker logs mycontainer 2>&1 | scrublog > clean.log
+$ docker logs mycontainer 2>&1 | scrublog - > clean.log
 
-$ npm test -- --color=always | scrublog > test-output.txt
+$ npm test -- --color=always | scrublog - > test-output.txt
 ```
 
 Clean a file in place:
@@ -130,7 +130,7 @@ $ scrublog -i server.log
 Inspect a log without ANSI noise:
 
 ```bash
-$ grep -E "ERROR|FATAL" /var/log/app.log | scrublog
+$ grep -E "ERROR|FATAL" /var/log/app.log | scrublog -
 ```
 
 ## Why another strip-ANSI library?
@@ -210,6 +210,16 @@ chunk at a time; UTF-8 code points and ANSI sequences may cross chunk boundaries
   a usage error such as combining stdin with `--in-place`.
 - Stdout modes append a final newline when non-empty cleaned output lacks one;
   in-place mode preserves whether the original file had a final newline.
+
+## Limitations
+
+- **TOCTOU on symlinks.** The `--in-place` symlink check is a one-shot
+  `lstat`-style walk: there is a small window between the check and the
+  open/rename in which the path could be replaced with a symlink. The default
+  refusal still protects against accidental symlink writes — the residual risk
+  is a same-process race where an attacker has write access to a parent
+  directory. If you need stronger guarantees, audit the directory first or
+  pass `--follow-symlinks` only on paths you control.
 
 ## Development
 
