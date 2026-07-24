@@ -30,7 +30,11 @@ Existing solutions either:
 
 ## Features
 
-- ✅ Strips **all** ANSI escape classes: SGR (colors), CSI cursor / clear,
+`scrublog` is a control-sequence **stripper**, not a terminal emulator or
+screen-state renderer. It removes the documented 7-bit ECMA-48/xterm forms
+without interpreting cursor movement or reconstructing progress bars.
+
+- ✅ Strips supported ANSI escape classes: SGR (colors), CSI cursor / clear,
   OSC (terminal titles, hyperlinks), DCS, and single-char escapes
 - ✅ Handles 16-color, **256-color**, and **truecolor (24-bit RGB)**
 - ✅ Safely handles **incomplete / split escape sequences** at end of input
@@ -61,7 +65,7 @@ pip install -e .
 ## Library usage
 
 ```python
-from scrublog import clean, has_ansi, count_ansi, stream
+from scrublog import clean, has_ansi, count_ansi, stream, stream_iter
 
 # Strip ANSI from anything
 clean("\x1b[31mhello\x1b[0m")        # => "hello"
@@ -83,6 +87,10 @@ count_ansi(line_with_many_codes)  # => int
 # Stream — safe even if escape sequences split across chunks
 for clean_chunk in stream(raw_chunk_1, raw_chunk_2, raw_chunk_3):
     sink.write(clean_chunk)
+
+# Lazy iterator form — bounded memory for files, pipes, and generators
+for clean_chunk in stream_iter(chunk_generator()):
+    sink.write(clean_chunk)
 ```
 
 ## CLI usage
@@ -92,6 +100,10 @@ scrublog <file>          Strip ANSI from <file>, print to stdout.
 scrublog <file> -i       Strip in place (overwrite the file).
 scrublog --stdin         Read from stdin, write to stdout.
 scrublog -               Shorthand for --stdin.
+scrublog -i FILE --follow-symlinks
+                         Explicitly allow in-place writes through symlinks.
+scrublog FILE --allow-special-files
+                         Explicitly allow reading a device/special file.
 ```
 
 ### Examples
@@ -148,8 +160,19 @@ implementation that handles the messy cases:
 | OSC title | `\x1b]0;title\x07` | ✅ |
 | OSC hyperlink | `\x1b]8;;url\x1b\\…\x1b]8;;\x1b\\` | ✅ |
 | DCS / SOS / PM / APC | `\x1bP…\x1b\\` | ✅ |
-| Single-char (e.g. RIS) | `\x1b7` | ✅ |
-| Incomplete / trailing | `text\x1b` or `text\x1b[31` | ✅ dropped cleanly |
+| Single-char (e.g. xterm RIS) | `\x1bc` | ✅ |
+| Incomplete ESC / CSI tail | `text\x1b` or `text\x1b[31` | ✅ dropped cleanly |
+| Unterminated OSC / DCS in `clean` | `text\x1b]0;title` | preserved; not counted |
+| Unterminated OSC / DCS in streams | `text\x1b]0;title` at EOF | dropped as an incomplete tail |
+
+`clean`, `has_ansi`, and `count_ansi` treat a trailing bare ESC or partial CSI
+as one incomplete sequence. In a single buffer, unterminated OSC/DCS-family
+introducers are preserved and are not counted. The streaming APIs hold those
+control strings for a possible later terminator and drop a still-unterminated
+tail at EOF. Their partial-tail buffer is capped at 1 MiB; longer malformed
+inputs are flushed as ordinary text rather than growing memory without bound.
+Byte streams use incremental UTF-8 decoding across chunk boundaries and map
+malformed byte values through latin-1.
 
 ## API reference
 
@@ -170,13 +193,31 @@ Number of distinct ANSI escape sequences in *s*.
 Generator that yields cleaned string chunks. Buffers incomplete escape
 sequences across chunk boundaries so they never leak into output.
 
+### `stream_iter(chunks: Iterable[str | bytes]) -> Iterator[str]`
+
+Lazy streaming form for generators, files, and pipes. Input is consumed one
+chunk at a time; UTF-8 code points and ANSI sequences may cross chunk boundaries.
+
+## CLI safety and exit codes
+
+- `--in-place` refuses a final symlink or any symlinked path component unless
+  `--follow-symlinks` is supplied. Writes use a same-directory temporary file
+  and atomic replacement; failures preserve the source and clean the temporary.
+- `/dev/*` special files are refused by default so infinite devices such as
+  `/dev/zero` cannot hang or exhaust memory. `--allow-special-files` is an
+  explicit override for expert use.
+- Exit code `0` means success, `1` means an I/O or safety refusal, and `2` means
+  a usage error such as combining stdin with `--in-place`.
+- Stdout modes append a final newline when non-empty cleaned output lacks one;
+  in-place mode preserves whether the original file had a final newline.
+
 ## Development
 
 ```bash
 git clone https://github.com/prasad-a-abhishek/scrublog
 cd scrublog
 pip install -e ".[test]"
-pytest                   # 25 tests, all green
+pytest                   # full test suite
 ```
 
 Tested on Python 3.8 – 3.12.

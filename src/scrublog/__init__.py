@@ -13,6 +13,7 @@ Raises:
 """
 from __future__ import annotations
 
+import codecs
 import re
 from typing import Iterator, Union
 
@@ -243,13 +244,22 @@ def stream_iter(chunks) -> Iterator[str]:
     of a multi-byte one.
     """
     buffer = ""
+    # Byte chunks need an incremental decoder: a UTF-8 code point may be
+    # divided by an OS/file read boundary.  Decode valid UTF-8 incrementally,
+    # while mapping malformed bytes through latin-1 without losing values.
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="surrogateescape")
+
+    def _decode_bytes(raw: bytes, final: bool = False) -> str:
+        decoded = decoder.decode(raw, final=final)
+        if any(0xDC80 <= ord(ch) <= 0xDCFF for ch in decoded):
+            return decoded.encode("utf-8", "surrogateescape").decode("latin-1")
+        return decoded
+
     for raw in chunks:
         if isinstance(raw, (bytes, bytearray)):
-            try:
-                c = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                c = raw.decode("latin-1")
+            c = _decode_bytes(bytes(raw))
         elif isinstance(raw, str):
+            buffer += _decode_bytes(b"")
             c = raw
         else:
             raise ScrubError(
@@ -296,6 +306,8 @@ def stream_iter(chunks) -> Iterator[str]:
                 yield cleaned
 
         buffer = tail
+
+    buffer += _decode_bytes(b"", final=True)
 
     if buffer:
         # End-of-input: strip whatever is still in the buffer. The
