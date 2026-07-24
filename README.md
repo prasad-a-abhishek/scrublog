@@ -4,7 +4,7 @@
 > One job. Done well. Zero dependencies.
 
 ```
-$ echo -e '\033[31mERROR\033[0m: bad' | scrublog
+$ printf '\033[31mERROR\033[0m: bad\n' | scrublog -
 ERROR: bad
 ```
 
