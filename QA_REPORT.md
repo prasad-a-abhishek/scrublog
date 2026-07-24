@@ -1,3 +1,7 @@
+---
+tests_passing: true
+---
+
 # scrublog — Quality Analyst Report
 
 ## Verdict: **FIX**
