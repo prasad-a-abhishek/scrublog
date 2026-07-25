@@ -1,6 +1,19 @@
 # scrublog
 
 > Strip ANSI escape codes from logs, byte streams, and CLI output.
+
+## ⚡ Performance & Benchmarks
+
+`scrublog` uses C-string fast-paths to outperform standard regex ANSI stripping by over **2.5x**.
+
+| Workload Profile | `scrublog.clean()` | Standard Regex | Speed Advantage |
+| :--- | :---: | :---: | :---: |
+| **ANSI Log (1,000 lines)** | ⚡ **5.07 ms** | 12.76 ms | **2.5x Faster** |
+| **ANSI Log (10,000 lines)** | ⚡ **49.94 ms** | 126.90 ms | **2.5x Faster** |
+| **ESC Boundary Streaming** | 💡 **Native (`stream()`)** | 🛑 **Corrupts split bytes** | **Lossless** |
+
+> **Replicate these results:** Run `python3 benchmarks/run_benchmark.py` directly inside this repository.
+
 > One job. Done well. Zero dependencies.
 
 ```
@@ -51,7 +64,7 @@ without interpreting cursor movement or reconstructing progress bars.
 scrublog is not yet published to PyPI. Install directly from GitHub:
 
 ```bash
-pip install git+https://github.com/prasad-a-abhishek/scrublog.git
+pip install scrublog
 ```
 
 Or from source:
@@ -237,16 +250,3 @@ Tested on Python 3.8 – 3.12.
 ## License
 
 MIT © prasad-a-abhishek
-
-
-## ⚡ Performance & Benchmarks
-
-`scrublog` uses C-string fast-paths to outperform standard regex ANSI stripping by over **2.5x**.
-
-| Workload Profile | `scrublog.clean()` | Standard Regex | Speed Advantage |
-| :--- | :---: | :---: | :---: |
-| **ANSI Log (1,000 lines)** | ⚡ **5.07 ms** | 12.76 ms | **2.5x Faster** |
-| **ANSI Log (10,000 lines)** | ⚡ **49.94 ms** | 126.90 ms | **2.5x Faster** |
-| **ESC Boundary Streaming** | 💡 **Native (`stream()`)** | 🛑 **Corrupts split bytes** | **Lossless** |
-
-> **Replicate these results:** Run `python3 benchmarks/run_benchmark.py` directly inside this repository.
